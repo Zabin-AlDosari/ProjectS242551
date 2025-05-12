@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
+from ament_index_python.packages import get_package_share_directory
+import os
+
+def generate_launch_description():
+    # Declare launch arguments
+    serial_port = DeclareLaunchArgument(
+        'serial_port',
+        default_value='/dev/ttyUSB0',
+        description='RPLIDAR serial port'
+    )
+    
+    baud_rate = DeclareLaunchArgument(
+        'baud_rate',
+        default_value='256000',
+        description='RPLIDAR baud rate'
+    )
+    
+    # RPLIDAR node
+    rplidar_node = Node(
+        package='rplidar_ros',
+        executable='rplidar_node',
+        name='rplidar_node',
+        parameters=[{
+            'serial_port': LaunchConfiguration('serial_port'),
+            'serial_baudrate': LaunchConfiguration('baud_rate'),
+            'frame_id': 'laser',
+            'inverted': False,
+            'angle_compensate': True,
+            'scan_mode': 'Sensitivity'
+        }],
+        output='screen'
+    )
+    
+    # Static transform for LiDAR
+    tf_lidar = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_lidar',
+        arguments=['0.25', '0', '0.4', '0', '0', '0', 'base_link', 'laser']
+    )
+    
+    # RViz2 node for visualization
+    rviz_config = os.path.join(
+        get_package_share_directory('golf_cart_bringup'),
+        'rviz',
+        'test_sensors.rviz'
+    )
+    
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', rviz_config],
+        output='screen'
+    )
+    
+    return LaunchDescription([
+        serial_port,
+        baud_rate,
+        rplidar_node,
+        tf_lidar,
+        rviz_node
+    ])

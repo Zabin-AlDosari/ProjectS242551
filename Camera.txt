@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from ament_index_python.packages import get_package_share_directory
+import os
+
+def generate_launch_description():
+    # Declare launch arguments
+    camera_id = DeclareLaunchArgument(
+        'camera_id',
+        default_value='1',  # Using /dev/video1
+        description='Camera device ID'
+    )
+    
+    # Camera node
+    camera_node = Node(
+        package='golf_cart_perception',
+        executable='camera_node',
+        name='camera_node',
+        parameters=[{
+            'camera_id': LaunchConfiguration('camera_id'),
+            'frame_width': 640,
+            'frame_height': 480,
+            'frame_rate': 15.0,
+            'confidence_threshold': 0.5
+        }],
+        output='screen'
+    )
+    
+    # Static transform for camera
+    tf_camera = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_camera',
+        arguments=['0.3', '0', '0.35', '0', '0', '0', 'base_link', 'camera_link']
+    )
+    
+    # rqt_image_view
+    rqt_image_view = ExecuteProcess(
+        cmd=['ros2', 'run', 'rqt_image_view', 'rqt_image_view'],
+        output='screen'
+    )
+    
+    return LaunchDescription([
+        camera_id,
+        camera_node,
+        tf_camera,
+        rqt_image_view
+    ])

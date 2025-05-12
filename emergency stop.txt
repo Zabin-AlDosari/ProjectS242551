@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String, Bool
+from geometry_msgs.msg import Twist
+import serial
+import time
+import threading
+
+class EmergencyStopNode(Node):
+    """
+    Emergency Stop Node for autonomous vehicle
+    
+    This node monitors ultrasonic sensor data via serial communication
+    and triggers emergency stop when obstacles are detected within threshold
+    """
+    
+    def _init_(self):
+        super()._init_('emergency_stop_node')
+        
+        # Parameters
+        self.declare_parameter('serial_port', '/dev/ttyACM1')
+        self.declare_parameter('baud_rate', 9600)
+        self.declare_parameter('stop_duration', 5.0)  # seconds
+        
+        # Get parameters
+        self.serial_port = self.get_parameter('serial_port').value
+        self.baud_rate = self.get_parameter('baud_rate').value
+        self.stop_duration = self.get_parameter('stop_duration').value
+        
+        # State variables
+        self.emergency_active = False
+        self.stop_timer = None
+        
+        # Publishers
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.emergency_status_pub = self.create_publisher(Bool, '/emergency_status', 10)
+        
+        # Subscribers
+        self.cmd_vel_sub = self.create_subscription(
+            Twist,
+            '/cmd_vel_input',  # Original commands before intervention
+            self.cmd_vel_callback,
+            10)
+            
+        # Set up serial connection
+        try:
+            self.ser = serial.Serial(
+                port=self.serial_port,
+                baudrate=self.baud_rate,
+                timeout=1.0
+            )
+            self.get_logger().info(f"Connected to Arduino on {self.serial_port}")
+            
+            # Start serial monitoring thread
+            self.serial_thread = threading.Thread(target=self.monitor_serial)
+            self.serial_thread.daemon = True
+            self.serial_thread.start()
+            
+        except serial.SerialException as e:
+            self.get_logger().error(f"Failed to connect to Arduino: {str(e)}")
+            self.ser = None
+            
+        # Timer for status updates
+        self.status_timer = self.create_timer(1.0, self.publish_status)
+        
+        self.get_logger().info("Emergency Stop Node initialized")
+    
+    def cmd_vel_callback(self, msg):
+        """Process incoming velocity commands and block them during emergency"""
+        if not self.emergency_active:
+            # Pass through command if no emergency
+            self.cmd_vel_pub.publish(msg)
+        else:
+            # Drop command during emergency
+            self.get_logger().debug("Blocking movement command during emergency stop")
+    
+    def monitor_serial(self):
+        """Monitor serial port for emergency signals from Arduino"""
+        while rclpy.ok() and self.ser is not None:
+            try:
+                if self.ser.in_waiting > 0:
+                    data = self.ser.readline().decode('utf-8').strip()
+                    if data == 's' or data == 'S':  # Stop signal
+                        self.trigger_emergency_stop()
+                    self.get_logger().debug(f"Serial data: {data}")
+            except Exception as e:
+                self.get_logger().error(f"Serial error: {str(e)}")
+                time.sleep(1.0)
+    
+    def trigger_emergency_stop(self):
+        """Activate emergency stop procedure"""
+        if not self.emergency_active:
+            self.get_logger().warn("EMERGENCY STOP TRIGGERED!")
+            self.emergency_active = True
+            
+            # Publish zero velocity immediately
+            stop_cmd = Twist()
+            self.cmd_vel_pub.publish(stop_cmd)
+            
+            # Publish emergency status
+            status_msg = Bool()
+            status_msg.data = True
+            self.emergency_status_pub.publish(status_msg)
+            
+            # Set timer to release emergency after duration
+            if self.stop_timer is not None:
+                self.stop_timer.cancel()
+            self.stop_timer = self.create_timer(
+                self.stop_duration,
+                self.release_emergency_stop
+            )
+    
+    def release_emergency_stop(self):
+        """Release emergency stop after timeout"""
+        self.emergency_active = False
+        self.get_logger().info("Emergency stop released")
+        
+        # Publish emergency clear status
+        status_msg = Bool()
+        status_msg.data = False
+        self.emergency_status_pub.publish(status_msg)
+        
+        # Cancel timer
+        if self.stop_timer is not None:
+            self.stop_timer.cancel()
+            self.stop_timer = None
+    
+    def publish_status(self):
+        """Publish current emergency status periodically"""
+        status_msg = Bool()
+        status_msg.data = self.emergency_active
+        self.emergency_status_pub.publish(status_msg)
+    
+    def cleanup(self):
+        """Clean up resources"""
+        if self.ser is not None:
+            self.ser.close()
+            self.get_logger().info("Serial port closed")
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = EmergencyStopNode()
+    
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.cleanup()
+        node.destroy_node()
+        rclpy.shutdown()
+
+if _name_ == '_main_':
+    main()
